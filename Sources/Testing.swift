@@ -316,17 +316,102 @@ final class AutoTest {
     }
 }
 
+/// `MostOken --inject-lab <window title>`: tries several ways of delivering clicks and scrolls to
+/// a background window and logs them; the test-source window logs what actually arrives.
+enum InjectLab {
+    private static let markerKeys: [UInt16] = [18, 19, 20, 21, 23, 22, 26] // 1…7
+
+    static func run(target: String) {
+        Log.write("LAB: start")
+        DispatchQueue.global().async {
+            Thread.sleep(forTimeInterval: 0.8)
+            guard let w = WindowList.onScreen().first(where: { $0.title == target }) else {
+                Log.write("LAB: okno „\(target)“ nenalezeno")
+                DispatchQueue.main.async { NSApp.terminate(nil) }
+                return
+            }
+            let pid = w.pid, wid = w.wid, b = w.bounds
+            let f51 = CGEventField(rawValue: 51)!, f91 = CGEventField(rawValue: 91)!, f92 = CGEventField(rawValue: 92)!
+            let h = ScreenGeometry.primaryHeight
+            func ns(_ t: CGEventType, _ p: CGPoint, windowCoords: Bool) -> CGEvent? {
+                let type: NSEvent.EventType = t == .leftMouseDown ? .leftMouseDown : .leftMouseUp
+                let cocoa = windowCoords ? NSPoint(x: p.x - b.minX, y: b.maxY - p.y) : NSPoint(x: p.x, y: h - p.y)
+                return NSEvent.mouseEvent(with: type, location: cocoa, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                          windowNumber: Int(wid), context: nil, eventNumber: 0, clickCount: 1, pressure: 1)?.cgEvent
+            }
+            func cg(_ t: CGEventType, _ p: CGPoint, _ state: CGEventSourceStateID?, fields: [CGEventField]) -> CGEvent? {
+                let src = state.map { CGEventSource(stateID: $0) } ?? nil
+                let e = CGEvent(mouseEventSource: src, mouseType: t, mouseCursorPosition: p, mouseButton: .left)
+                for f in fields { e?.setIntegerValueField(f, value: Int64(wid)) }
+                e?.setIntegerValueField(.mouseEventClickState, value: 1)
+                return e
+            }
+            let methods: [(String, (CGEventType, CGPoint) -> CGEvent?)] = [
+                ("A cg hid +51", { cg($0, $1, .hidSystemState, fields: [f51]) }),
+                ("B nsevent screen", { ns($0, $1, windowCoords: false) }),
+                ("C nsevent window", { ns($0, $1, windowCoords: true) }),
+                ("D cg private +51+91+92", { cg($0, $1, .privateState, fields: [f51, f91, f92]) }),
+                ("E cg nil +51+91+92", { cg($0, $1, nil, fields: [f51, f91, f92]) }),
+                ("F nsevent screen +91+92", { t, p in let e = ns(t, p, windowCoords: false); e?.setIntegerValueField(f91, value: Int64(wid)); e?.setIntegerValueField(f92, value: Int64(wid)); return e }),
+            ]
+            for (i, (name, make)) in methods.enumerated() {
+                AX.raise(pid: pid, wid: wid)
+                Thread.sleep(forTimeInterval: 0.4)
+                for down in [true, false] {
+                    CGEvent(keyboardEventSource: CGEventSource(stateID: .hidSystemState), virtualKey: markerKeys[i], keyDown: down)?.postToPid(pid)
+                }
+                Thread.sleep(forTimeInterval: 0.15)
+                let p = CGPoint(x: b.minX + b.width * (0.2 + 0.1 * Double(i)), y: b.minY + b.height * 0.55)
+                let downEvent = make(.leftMouseDown, p)
+                Log.write("LAB: metoda \(i + 1) \(name), cíl \(p), událost na \(downEvent?.location ?? .zero), pole51=\(downEvent?.getIntegerValueField(f51) ?? -1)")
+                downEvent?.postToPid(pid)
+                Thread.sleep(forTimeInterval: 0.06)
+                make(.leftMouseUp, p)?.postToPid(pid)
+                Thread.sleep(forTimeInterval: 0.2)
+                for _ in 0..<3 {
+                    let s = CGEvent(scrollWheelEvent2Source: CGEventSource(stateID: .hidSystemState), units: .pixel,
+                                    wheelCount: 1, wheel1: -40, wheel2: 0, wheel3: 0)
+                    s?.location = p
+                    s?.setIntegerValueField(f51, value: Int64(wid))
+                    s?.postToPid(pid)
+                    Thread.sleep(forTimeInterval: 0.03)
+                }
+                Thread.sleep(forTimeInterval: 0.35)
+            }
+            Log.write("LAB: konec")
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
+    }
+}
+
 /// `MostOken --test-source <file>`: a plain text window used as the target of the autotest.
 /// Writes what it receives (text, clicks, scrolls, files) to <file>.
 final class TestSourceDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NSWindowDelegate {
     private let output: URL
     private var window: NSWindow!
     private var textView: CountingTextView!
+    private var eventMonitor: Any?
 
     init(output: URL) { self.output = output }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.prefix = "[zdroj] "
+        let eventLog = output.deletingPathExtension().appendingPathExtension("events.log")
+        try? Data().write(to: eventLog)
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .any) { [weak self] e in
+            var line = "\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime)) type=\(e.type.rawValue) win=\(e.windowNumber) mine=\(self?.window?.windowNumber ?? 0)"
+            switch e.type {
+            case .keyDown, .keyUp: line += " key=\(e.keyCode) chars=\(e.characters ?? "")"
+            case .leftMouseDown, .leftMouseUp, .mouseMoved, .leftMouseDragged:
+                line += " loc=\(e.locationInWindow) clicks=\(e.clickCount)"
+            case .scrollWheel: line += " loc=\(e.locationInWindow) dy=\(e.scrollingDeltaY)"
+            default: break
+            }
+            if let h = try? FileHandle(forWritingTo: eventLog), let d = (line + "\n").data(using: .utf8) {
+                h.seekToEndOfFile(); h.write(d); try? h.close()
+            }
+            return e
+        }
         window = NSWindow(contentRect: NSRect(x: 180, y: 260, width: 640, height: 420),
                           styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "MostOken test"

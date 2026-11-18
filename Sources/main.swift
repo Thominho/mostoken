@@ -9,6 +9,11 @@ if arguments.contains("--selftest") {
         exit(ok ? 0 : 1)
     }
     dispatchMain()
+} else if let i = arguments.firstIndex(of: "--inject-lab"), i + 1 < arguments.count {
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    InjectLab.run(target: arguments[i + 1])
+    app.run()
 } else if let i = arguments.firstIndex(of: "--test-source") {
     let path = i + 1 < arguments.count ? arguments[i + 1] : NSTemporaryDirectory() + "mostoken-test.json"
     let app = NSApplication.shared

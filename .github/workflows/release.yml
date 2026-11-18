@@ -45,6 +45,13 @@ jobs:
           VERSION="$VERSION" ./build.sh
           codesign -dr - build/MostOken.app
 
+      - name: Upload test build
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: MostOken-test
+          path: build/MostOken.zip
+
       - name: Publish release
         if: github.ref_type == 'tag'
         env:
