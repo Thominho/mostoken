@@ -26,12 +26,16 @@ final class RemoteVideoView: NSView {
     let displayLayer = AVSampleBufferDisplayLayer()
     let wid: UInt32
     let isPopup: Bool
-    var videoSize: NSSize
-    var chrome: Chrome?
+    var videoSize: NSSize { didSet { needsLayout = true } }
+    var chrome: Chrome? { didSet { needsLayout = true } }
     var onInput: ((InputEvent) -> Void)?
     var onFilesDropped: (([URL]) -> Void)?
     var onLocalMinimize: (() -> Void)?
     var onLocalZoom: (() -> Void)?
+    var onCloseRequest: (() -> Void)?
+    /// Real traffic-light buttons over the captured ones (macOS may cover those with its
+    /// "window is being shared" badge).
+    private var buttons: [NSButton] = []
     /// Screen position of the last click, to place menus the click opens.
     private(set) var lastClickScreen: NSPoint?
 
@@ -41,7 +45,6 @@ final class RemoteVideoView: NSView {
     private var remainderY: CGFloat = 0
     private var pendingTitleDown: NSEvent?
     private var movingWindow = false
-    private var localButton: String?
 
     init(wid: UInt32, videoSize: NSSize, isPopup: Bool) {
         self.wid = wid
@@ -49,8 +52,10 @@ final class RemoteVideoView: NSView {
         self.isPopup = isPopup
         super.init(frame: NSRect(origin: .zero, size: videoSize))
         displayLayer.videoGravity = .resizeAspect
-        layer = displayLayer
         wantsLayer = true
+        layer?.addSublayer(displayLayer)
+        displayLayer.frame = bounds
+        displayLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
         setTransparent(true)
         if !isPopup { registerForDraggedTypes([.fileURL]) }
     }
@@ -90,6 +95,46 @@ final class RemoteVideoView: NSView {
     }
 
     // MARK: Geometry
+
+    override func layout() {
+        super.layout()
+        displayLayer.frame = bounds
+        layoutButtons()
+    }
+
+    private func layoutButtons() {
+        guard !isPopup, let chrome else { buttons.forEach { $0.isHidden = true }; return }
+        let kinds: [(NSWindow.ButtonType, [Double]?)] = [(.closeButton, chrome.close), (.miniaturizeButton, chrome.minimize),
+                                                         (.zoomButton, chrome.zoom)]
+        if buttons.isEmpty {
+            for (type, _) in kinds {
+                guard let b = NSWindow.standardWindowButton(type, for: [.titled, .closable, .miniaturizable, .resizable]) else { continue }
+                b.target = self
+                b.action = #selector(buttonPressed(_:))
+                b.tag = Int(type.rawValue)
+                addSubview(b)
+                buttons.append(b)
+            }
+        }
+        for b in buttons {
+            guard let r = kinds.first(where: { Int($0.0.rawValue) == b.tag })?.1, let rect = viewRect(r)?.insetBy(dx: 3, dy: 3) else {
+                b.isHidden = true
+                continue
+            }
+            b.isHidden = false
+            let s = b.frame.size
+            b.setFrameOrigin(NSPoint(x: rect.midX - s.width / 2, y: rect.midY - s.height / 2))
+        }
+    }
+
+    @objc private func buttonPressed(_ sender: NSButton) {
+        switch NSWindow.ButtonType(rawValue: UInt(sender.tag)) {
+        case .closeButton: onCloseRequest?()
+        case .miniaturizeButton: onLocalMinimize?()
+        case .zoomButton: onLocalZoom?()
+        default: break
+        }
+    }
 
     private var videoRect: NSRect {
         guard videoSize.width > 0, videoSize.height > 0 else { return bounds }
@@ -172,12 +217,9 @@ final class RemoteVideoView: NSView {
         lastClickScreen = NSEvent.mouseLocation
         movingWindow = false
         pendingTitleDown = nil
-        localButton = nil
         if !isPopup {
             let p = local(e)
-            if let r = viewRect(chrome?.minimize), r.contains(p) { localButton = "minimize"; return }
-            if let r = viewRect(chrome?.zoom), r.contains(p) { localButton = "zoom"; return }
-            if inTitleZone(p) && !(viewRect(chrome?.close)?.contains(p) ?? false) {
+            if inTitleZone(p) {
                 if e.clickCount == 2 { onLocalZoom?(); return }
                 // Wait: a drag moves this window, a plain click goes through on mouse-up.
                 pendingTitleDown = e
@@ -197,18 +239,11 @@ final class RemoteVideoView: NSView {
             }
             return
         }
-        if movingWindow || localButton != nil { return }
+        if movingWindow { return }
         send(.mouseDrag, e, button: 0)
     }
 
     override func mouseUp(with e: NSEvent) {
-        if let button = localButton {
-            localButton = nil
-            let p = local(e)
-            if button == "minimize", let r = viewRect(chrome?.minimize), r.contains(p) { onLocalMinimize?() }
-            if button == "zoom", let r = viewRect(chrome?.zoom), r.contains(p) { onLocalZoom?() }
-            return
-        }
         if let down = pendingTitleDown {
             pendingTitleDown = nil
             send(.mouseDown, down, button: 0)
@@ -385,6 +420,10 @@ final class RemoteWindowController: NSObject, NSWindowDelegate {
         videoView.onInput = { [weak self] e in self?.peer?.send(Wire.json(.input, e)) }
         videoView.onLocalMinimize = { [weak self] in self?.window.miniaturize(nil) }
         videoView.onLocalZoom = { [weak self] in self?.toggleZoom() }
+        videoView.onCloseRequest = { [weak self] in
+            guard let self else { return }
+            self.peer?.send(Wire.json(.closeWindow, WindowRef(wid: self.wid)))
+        }
 
         if isPopup {
             window.setFrame(popupFrame(size: size, open: o, anchor: anchor), display: false)

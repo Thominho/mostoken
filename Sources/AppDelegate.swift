@@ -88,7 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         MostOken spojí tento Mac s druhým tak, že se chovají jako jeden počítač se dvěma obrazovkami. Musí běžet na obou Macích.
 
         • Okno pošleš tak, že ho přetáhneš k okraji obrazovky směrem k druhému Macu a chvilku ho tam podržíš. Nebo stiskni ⌃⌥⌘ + šipku.
-        • Okno vrátíš přetažením zpět přes okraj, zavřením (červené tlačítko) nebo znovu stiskem ⌃⌥⌘ + šipky.
+        • Okno vrátíš přetažením za lištu zpět přes okraj nebo znovu stiskem ⌃⌥⌘ + šipky. Červené tlačítko okno zavře, jako na jednom počítači.
         • Soubory přetažené do okna z druhého Macu se přenesou na ten Mac.
 
         Teď se macOS zeptá na oprávnění Záznam obrazovky a Zpřístupnění. Povol obě a MostOken pak spusť znovu. V Nastavení si potom nastav, kde druhý Mac stojí.

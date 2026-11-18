@@ -96,7 +96,9 @@ Když se Macy do dvou minut nenajdou:
 
 - **Poslat okno na druhý Mac:** přetáhnout okno za horní lištu k okraji obrazovky směrem
   k druhému Macu a chvilku ho tam podržet. Nebo stisknout ⌃⌥⌘ + šipku.
-- **Vrátit okno:** přetáhnout ho zpět přes okraj, zavřít ho červeným tlačítkem, nebo
+- Přenesené okno se chová jako místní: přesouvá se za lištu, žluté tlačítko ho minimalizuje,
+  zelené zvětší, červené okno zavře.
+- **Vrátit okno:** přetáhnout ho za lištu zpět přes okraj, nebo
   znovu stisknout ⌃⌥⌘ + šipku.
 - **Soubory:** mezi plochami a Findery je přetahuje Univerzální ovládání. Soubor puštěný
   do okna, které přišlo z druhého Macu, se zkopíruje na ten Mac do Stažené soubory/MostOken

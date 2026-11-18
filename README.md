@@ -14,7 +14,11 @@ klávesnici a přetahování souborů. MostOken k tomu přidává přesouvání 
   na místě, kde jsi okraj přešel.
 - **Plné ovládání** přesunutého okna: klikání, psaní, klávesové zkratky (⌘C, ⌘V…), posouvání
   a změna velikosti.
-- **Vrácení okna** přetažením zpět přes okraj, zavřením (červené tlačítko) nebo ⌃⌥⌘ + šipkou.
+- **Okno se chová jako místní:** přesouvá se za vlastní lištu, žluté tlačítko ho minimalizuje
+  a zelené zvětší na Macu, kde zrovna je. Červené tlačítko okno zavře, stejně jako na jednom počítači.
+- **Vrácení okna** přetažením za lištu zpět přes okraj nebo ⌃⌥⌘ + šipkou.
+- **Nabídky:** kontextové nabídky (pravé tlačítko) a rozbalovací seznamy se zobrazí na Macu,
+  kde okno právě je.
 - **Rozložení Maců** vlevo, vpravo, nahoře nebo dole. Nastavuje se přetažením v Nastavení
   a samo se přenese na druhý Mac.
 - **Soubory do okna:** soubor puštěný do okna z druhého Macu se přenese na ten Mac a otevře
@@ -56,16 +60,12 @@ aplikace. Původní okno se mezitím odsune skoro celé za okraj obrazovky.
 ## Omezení
 
 - Když se původní Mac uspí nebo spojení spadne, okno se vrátí zpátky na něj.
-- Kontextové a rozbalovací nabídky (pravé tlačítko, výběr ze seznamu) se zatím otevírají
-  na původním Macu.
 - Obraz je komprimovaný, takže drobné písmo může být při rychlých změnách chvilku méně ostré.
 - Z přesunutého okna zatím nejde přetáhnout soubor ven, funguje jen směr do okna.
 - Na obou Macích by mělo být stejné rozložení klávesnice.
-- Když klikneš do okna z druhého Macu, původní okno se na původním Macu na chvilku vrátí na obrazovku,
-  aby kliknutí dopadlo na správné místo. Po pár vteřinách bez klikání se zase odsune.
-- Pokud se Macy ovládají jednou myší přes Univerzální ovládání, je to zatím vyzkoušené jen na jednom Macu.
-  Kdyby kliknutí do okna z druhého Macu zlobilo, dej vědět (nebo zkus v Nastavení pokusnou volbu
-  „Klikat na pozadí“).
+- Kliknutí a klávesy se doručují přímo aplikaci na původním Macu, kde se přitom nic nehýbe.
+  Kdyby některá aplikace na kliknutí nereagovala, zapni v Nastavení „Klikat přes kurzor“.
+- Kurzor nad přeneseným oknem má vždy tvar šipky (nemění se na textový kurzor apod.).
 
 ## Vývoj
 

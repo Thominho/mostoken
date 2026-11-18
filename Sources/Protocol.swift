@@ -21,6 +21,7 @@ enum MsgType: UInt8 {
     case viewInfo = 16
     case focus = 17
     case visibility = 18
+    case closeWindow = 19
 }
 
 /// What this build understands; sent in Hello so both Macs only use features both support.

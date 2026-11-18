@@ -247,6 +247,14 @@ enum AX {
                       titleHeight: titleHeight)
     }
 
+    static func pressCloseButton(pid: pid_t, wid: CGWindowID) -> Bool {
+        guard let w = window(pid: pid, wid: wid) else { return false }
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(w, kAXCloseButtonAttribute as CFString, &value) == .success, let value,
+              CFGetTypeID(value) == AXUIElementGetTypeID() else { return false }
+        return AXUIElementPerformAction(value as! AXUIElement, kAXPressAction as CFString) == .success
+    }
+
     static func raise(pid: pid_t, wid: CGWindowID) {
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString, kCFBooleanTrue)

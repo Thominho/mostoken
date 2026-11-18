@@ -24,6 +24,7 @@ final class InputInjector {
 
     private var pending: [InputEvent] = []
     private var waiting = false
+    private var popupsAtDown: Set<CGWindowID> = []
     private let isPopup: Bool
 
     private typealias SetWindowLocation = @convention(c) (CGEvent, CGPoint) -> Void
@@ -106,6 +107,15 @@ final class InputInjector {
                 return
             }
             pending.removeFirst()
+            if !isPopup && e.kind == .mouseDown {
+                popupsAtDown = Set(WindowList.popups(of: pid).map(\.wid))
+            }
+            if !isPopup && e.kind == .mouseUp {
+                // A real mouse keeps a menu open when the click that opened it ends; a release
+                // delivered elsewhere would close it straight away.
+                let now = Set(WindowList.popups(of: pid).map(\.wid))
+                if !now.subtracting(popupsAtDown).isEmpty { continue }
+            }
             if background {
                 post(e, toApp: true)
             } else {

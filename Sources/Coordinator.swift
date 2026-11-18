@@ -201,6 +201,13 @@ final class Coordinator {
             guard let v = Wire.parse(Visibility.self, data), let s = streamers[v.wid], s.peer === c else { return }
             s.setVisible(v.visible)
             for popup in streamers.values where popup.parentWid == v.wid { popup.setVisible(v.visible) }
+        case .closeWindow:
+            guard let r = Wire.parse(WindowRef.self, data), let s = streamers[r.wid], s.peer === c else { return }
+            if !AX.pressCloseButton(pid: s.info.pid, wid: s.wid) {
+                // No close button exposed: ⌘W, like a person would.
+                s.injector.inject(InputEvent(wid: r.wid, kind: .keyDown, keyCode: 0x0D, flags: UInt64(CGEventFlags.maskCommand.rawValue)))
+                s.injector.inject(InputEvent(wid: r.wid, kind: .keyUp, keyCode: 0x0D, flags: UInt64(CGEventFlags.maskCommand.rawValue)))
+            }
         case .focus:
             guard let r = Wire.parse(WindowRef.self, data), let s = streamers[r.wid], s.peer === c else { return }
             s.injector.prepareFocus()
