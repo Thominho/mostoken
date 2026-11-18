@@ -48,6 +48,41 @@ enum WindowList {
         onScreen().first { $0.bounds.contains(point) }
     }
 
+    /// Menus, pop-up lists, tooltips… of an app: on-screen windows above the normal level
+    /// (not the menu bar or status items).
+    static func popups(of pid: pid_t) -> [WindowInfo] {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return [] }
+        return list.compactMap { d in
+            guard let owner = d[kCGWindowOwnerPID as String] as? pid_t, owner == pid,
+                  let layer = d[kCGWindowLayer as String] as? Int, layer > 0, layer < 2000,
+                  layer != 24, layer != 25,
+                  let wid = d[kCGWindowNumber as String] as? CGWindowID,
+                  let boundsDict = d[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
+                  bounds.width >= 8, bounds.height >= 8 else { return nil }
+            if let alpha = d[kCGWindowAlpha as String] as? Double, alpha <= 0.01 { return nil }
+            return WindowInfo(wid: wid, pid: owner, app: d[kCGWindowOwnerName as String] as? String ?? "",
+                              title: d[kCGWindowName as String] as? String ?? "", bounds: bounds)
+        }
+    }
+
+    /// Topmost normal-level window of one app at a point (the window itself, or a sheet on it).
+    static func topmostWindow(of pid: pid_t, at point: CGPoint) -> (CGWindowID, CGRect)? {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+                as? [[String: Any]] else { return nil }
+        for d in list {
+            guard let owner = d[kCGWindowOwnerPID as String] as? pid_t, owner == pid,
+                  let layer = d[kCGWindowLayer as String] as? Int, layer == 0,
+                  let wid = d[kCGWindowNumber as String] as? CGWindowID,
+                  let boundsDict = d[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
+                  bounds.contains(point) else { continue }
+            if let alpha = d[kCGWindowAlpha as String] as? Double, alpha <= 0.01 { continue }
+            return (wid, bounds)
+        }
+        return nil
+    }
+
     /// Topmost normal window of any app (including MostOken itself) at a point.
     static func topmostWindow(at point: CGPoint) -> CGWindowID? {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
@@ -192,6 +227,24 @@ enum AX {
     static func setSize(_ w: AXUIElement, _ size: CGSize) {
         var s = size
         if let v = AXValueCreate(.cgSize, &s) { AXUIElementSetAttributeValue(w, kAXSizeAttribute as CFString, v) }
+    }
+
+    /// Positions of the window's own title bar buttons, relative to the window.
+    static func chrome(pid: pid_t, wid: CGWindowID) -> Chrome? {
+        guard let w = window(pid: pid, wid: wid), let origin = position(w) else { return nil }
+        func rect(_ attribute: String) -> [Double]? {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(w, attribute as CFString, &value) == .success, let value,
+                  CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+            let button = value as! AXUIElement
+            guard let p = position(button), let s = size(button), s.width > 0 else { return nil }
+            return [Double(p.x - origin.x), Double(p.y - origin.y), Double(s.width), Double(s.height)]
+        }
+        let close = rect(kAXCloseButtonAttribute)
+        var titleHeight = 30.0
+        if let c = close { titleHeight = min(max(28, c[1] * 2 + c[3]), 64) }
+        return Chrome(close: close, minimize: rect(kAXMinimizeButtonAttribute), zoom: rect(kAXZoomButtonAttribute),
+                      titleHeight: titleHeight)
     }
 
     static func raise(pid: pid_t, wid: CGWindowID) {

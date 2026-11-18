@@ -4,50 +4,77 @@ import CoreVideo
 import CoreImage
 import VideoToolbox
 
-/// Hardware H.264 encoder tuned for low latency screen content.
+enum VideoCodec {
+    /// H.264 without transparency; works with every MostOken version.
+    case h264
+    /// HEVC with an alpha channel (Apple silicon): sharper at the same bitrate and keeps the
+    /// window's rounded corners and shadow shape.
+    case hevcAlpha
+}
+
+/// Hardware video encoder tuned for low latency screen content.
 final class VideoEncoder {
     let width: Int
     let height: Int
+    let codec: VideoCodec
     private var session: VTCompressionSession?
     private let output: (Data, Bool, [Data]) -> Void
 
-    init?(width: Int, height: Int, output: @escaping (Data, Bool, [Data]) -> Void) {
+    /// Whether this Mac can encode HEVC with alpha in hardware (checked once).
+    static let hevcAlphaSupported: Bool = {
+        var s: VTCompressionSession?
+        let status = VTCompressionSessionCreate(
+            allocator: kCFAllocatorDefault, width: 256, height: 256, codecType: kCMVideoCodecType_HEVCWithAlpha,
+            encoderSpecification: [kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder as String: true] as CFDictionary,
+            imageBufferAttributes: nil, compressedDataAllocator: nil, outputCallback: nil, refcon: nil,
+            compressionSessionOut: &s)
+        if let s { VTCompressionSessionInvalidate(s) }
+        return status == noErr
+    }()
+
+    init?(width: Int, height: Int, codec: VideoCodec = .h264, output: @escaping (Data, Bool, [Data]) -> Void) {
         self.width = width
         self.height = height
+        self.codec = codec
         self.output = output
 
+        let codecType = codec == .hevcAlpha ? kCMVideoCodecType_HEVCWithAlpha : kCMVideoCodecType_H264
         var created: VTCompressionSession?
-        let lowLatency = [kVTVideoEncoderSpecification_EnableLowLatencyRateControl as String: true] as CFDictionary
-        var status = VTCompressionSessionCreate(
-            allocator: kCFAllocatorDefault, width: Int32(width), height: Int32(height),
-            codecType: kCMVideoCodecType_H264, encoderSpecification: lowLatency,
-            imageBufferAttributes: nil, compressedDataAllocator: nil,
-            outputCallback: nil, refcon: nil, compressionSessionOut: &created)
-        if status != noErr || created == nil {
-            Log.write("Kodér s nízkou latencí není k dispozici (\(status)), používám běžný")
-            status = VTCompressionSessionCreate(
+        func create(_ spec: [String: Any]?) -> OSStatus {
+            VTCompressionSessionCreate(
                 allocator: kCFAllocatorDefault, width: Int32(width), height: Int32(height),
-                codecType: kCMVideoCodecType_H264, encoderSpecification: nil,
+                codecType: codecType, encoderSpecification: spec as CFDictionary?,
                 imageBufferAttributes: nil, compressedDataAllocator: nil,
                 outputCallback: nil, refcon: nil, compressionSessionOut: &created)
         }
+        var status = create([kVTVideoEncoderSpecification_EnableLowLatencyRateControl as String: true])
+        if status != noErr || created == nil {
+            status = create(nil)
+        }
         guard status == noErr, let s = created else {
-            Log.write("Nelze vytvořit kodér videa: \(status)")
+            Log.write("Nelze vytvořit kodér videa (\(codec)): \(status)")
             return nil
         }
         session = s
 
         func set(_ key: CFString, _ value: CFTypeRef) {
             let r = VTSessionSetProperty(s, key: key, value: value)
-            if r != noErr { Log.write("Kodér: nelze nastavit \(key) (\(r))") }
+            if r != noErr && r != kVTPropertyNotSupportedErr { Log.write("Kodér: nelze nastavit \(key) (\(r))") }
         }
         set(kVTCompressionPropertyKey_RealTime, kCFBooleanTrue)
         set(kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse)
-        set(kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_ConstrainedHigh_AutoLevel)
-        let bitrate = min(max(width * height * 6, 6_000_000), 60_000_000)
-        set(kVTCompressionPropertyKey_AverageBitRate, NSNumber(value: bitrate))
         set(kVTCompressionPropertyKey_ExpectedFrameRate, NSNumber(value: 60))
         set(kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, NSNumber(value: 10))
+        let pixels = width * height
+        switch codec {
+        case .h264:
+            set(kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_ConstrainedHigh_AutoLevel)
+            set(kVTCompressionPropertyKey_AverageBitRate, NSNumber(value: min(max(pixels * 6, 6_000_000), 60_000_000)))
+        case .hevcAlpha:
+            set(kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_HEVC_Main_AutoLevel)
+            set(kVTCompressionPropertyKey_AverageBitRate, NSNumber(value: min(max(pixels * 4, 4_000_000), 45_000_000)))
+            set(kVTCompressionPropertyKey_TargetQualityForAlpha, NSNumber(value: 0.75))
+        }
         VTCompressionSessionPrepareToEncodeFrames(s)
     }
 
@@ -70,7 +97,7 @@ final class VideoEncoder {
         let pts = CMClockGetTime(CMClockGetHostTimeClock())
         let props: CFDictionary? = forceKey
             ? ([kVTEncodeFrameOptionKey_ForceKeyFrame as String: true] as CFDictionary) : nil
-        let out = output
+        let out = output, codec = self.codec
         let status = VTCompressionSessionEncodeFrame(
             session, imageBuffer: pixelBuffer, presentationTimeStamp: pts, duration: .invalid,
             frameProperties: props, infoFlagsOut: nil
@@ -79,12 +106,12 @@ final class VideoEncoder {
                 if status != noErr { Log.write("Chyba kódování snímku: \(status)") }
                 return
             }
-            VideoEncoder.extract(sampleBuffer, out)
+            VideoEncoder.extract(sampleBuffer, codec: codec, out)
         }
         if status != noErr { Log.write("Snímek nejde zakódovat: \(status)") }
     }
 
-    static func extract(_ sb: CMSampleBuffer, _ out: (Data, Bool, [Data]) -> Void) {
+    static func extract(_ sb: CMSampleBuffer, codec: VideoCodec, _ out: (Data, Bool, [Data]) -> Void) {
         guard let block = CMSampleBufferGetDataBuffer(sb) else { return }
 
         var isKey = true
@@ -98,29 +125,75 @@ final class VideoEncoder {
 
         var sets: [Data] = []
         if isKey, let fmt = CMSampleBufferGetFormatDescription(sb) {
-            var count = 0
-            CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
-                fmt, parameterSetIndex: 0, parameterSetPointerOut: nil, parameterSetSizeOut: nil,
-                parameterSetCountOut: &count, nalUnitHeaderLengthOut: nil)
-            for i in 0..<count {
-                var ptr: UnsafePointer<UInt8>?
-                var size = 0
-                if CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
-                    fmt, parameterSetIndex: i, parameterSetPointerOut: &ptr, parameterSetSizeOut: &size,
-                    parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil) == noErr, let ptr {
-                    sets.append(Data(bytes: ptr, count: size))
+            switch codec {
+            case .h264:
+                var count = 0
+                CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+                    fmt, parameterSetIndex: 0, parameterSetPointerOut: nil, parameterSetSizeOut: nil,
+                    parameterSetCountOut: &count, nalUnitHeaderLengthOut: nil)
+                for i in 0..<count {
+                    var ptr: UnsafePointer<UInt8>?
+                    var size = 0
+                    if CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+                        fmt, parameterSetIndex: i, parameterSetPointerOut: &ptr, parameterSetSizeOut: &size,
+                        parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil) == noErr, let ptr {
+                        sets.append(Data(bytes: ptr, count: size))
+                    }
                 }
+            case .hevcAlpha:
+                // The whole description (incl. the alpha layer info), not just VPS/SPS/PPS.
+                if let d = VideoFormat.serialize(fmt) { sets = [d] }
             }
         }
 
+        guard let data = blockData(block) else { return }
+        out(data, isKey, sets)
+    }
+
+    private static func blockData(_ block: CMBlockBuffer) -> Data? {
         let length = CMBlockBufferGetDataLength(block)
-        guard length > 0 else { return }
+        guard length > 0 else { return nil }
         var data = Data(count: length)
         let status = data.withUnsafeMutableBytes { raw in
             CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: raw.baseAddress!)
         }
-        guard status == kCMBlockBufferNoErr else { return }
-        out(data, isKey, sets)
+        return status == kCMBlockBufferNoErr ? data : nil
+    }
+}
+
+enum VideoFormat {
+    private static let encoding = CFStringBuiltInEncodings.UTF8.rawValue
+
+    static func serialize(_ fmt: CMVideoFormatDescription) -> Data? {
+        var block: CMBlockBuffer?
+        guard CMVideoFormatDescriptionCopyAsBigEndianImageDescriptionBlockBuffer(
+            allocator: kCFAllocatorDefault, videoFormatDescription: fmt, stringEncoding: encoding,
+            flavor: nil, blockBufferOut: &block) == noErr, let block else { return nil }
+        let length = CMBlockBufferGetDataLength(block)
+        var data = Data(count: length)
+        let status = data.withUnsafeMutableBytes { raw in
+            CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: raw.baseAddress!)
+        }
+        return status == kCMBlockBufferNoErr ? data : nil
+    }
+
+    static func deserialize(_ data: Data) -> CMVideoFormatDescription? {
+        guard let block = H264.blockBuffer(data) else { return nil }
+        var fmt: CMVideoFormatDescription?
+        let status = CMVideoFormatDescriptionCreateFromBigEndianImageDescriptionBlockBuffer(
+            allocator: kCFAllocatorDefault, bigEndianImageDescriptionBlockBuffer: block, stringEncoding: encoding,
+            flavor: nil, formatDescriptionOut: &fmt)
+        if status != noErr { Log.write("Neplatný popis videa: \(status)") }
+        return fmt
+    }
+
+    /// Format description carried by a keyframe, for either codec.
+    static func from(_ frame: VideoFrame) -> CMVideoFormatDescription? {
+        guard frame.isKey else { return nil }
+        if frame.isHEVC {
+            return frame.parameterSets.first.flatMap(deserialize)
+        }
+        return H264.makeFormat(frame.parameterSets)
     }
 }
 
@@ -144,7 +217,7 @@ enum H264 {
         return fmt
     }
 
-    static func makeSampleBuffer(_ data: Data, format: CMVideoFormatDescription) -> CMSampleBuffer? {
+    static func blockBuffer(_ data: Data) -> CMBlockBuffer? {
         guard !data.isEmpty else { return nil }
         var block: CMBlockBuffer?
         guard CMBlockBufferCreateWithMemoryBlock(
@@ -156,8 +229,12 @@ enum H264 {
             CMBlockBufferReplaceDataBytes(with: raw.baseAddress!, blockBuffer: block,
                                           offsetIntoDestination: 0, dataLength: data.count)
         }
-        guard copied == kCMBlockBufferNoErr else { return nil }
+        return copied == kCMBlockBufferNoErr ? block : nil
+    }
 
+    /// Works for both codecs (both use length-prefixed NAL units).
+    static func makeSampleBuffer(_ data: Data, format: CMVideoFormatDescription) -> CMSampleBuffer? {
+        guard let block = blockBuffer(data) else { return nil }
         var sample: CMSampleBuffer?
         var size = data.count
         guard CMSampleBufferCreateReady(

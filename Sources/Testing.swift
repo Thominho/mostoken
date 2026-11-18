@@ -3,6 +3,7 @@ import Network
 import CoreImage
 import CryptoKit
 import VideoToolbox
+import ScreenCaptureKit
 
 /// `MostOken --selftest`: checks framing, encoding, TCP transfer and decoding without any
 /// permissions or UI.
@@ -91,6 +92,38 @@ enum SelfTest {
               "klíčové snímky: \(keys), parametry SPS/PPS: \(frames.first?.parameterSets.count ?? 0)")
         if !frames.isEmpty { print("      průměrná velikost snímku: \(total / frames.count / 1024) kB") }
 
+        // 2b. HEVC with alpha: transparency must survive encoding, the wire and decoding.
+        if VideoEncoder.hevcAlphaSupported {
+            var hevc: [VideoFrame] = []
+            if let enc = VideoEncoder(width: w, height: h, codec: .hevcAlpha, output: { data, key, sets in
+                lock.lock()
+                hevc.append(VideoFrame(wid: 2, isKey: key, parameterSets: sets, data: data, isHEVC: true))
+                lock.unlock()
+            }) {
+                for i in 0..<20 {
+                    if let src = makeTestBuffer(width: w, height: h, frame: i) { enc.encode(src, forceKey: i == 0) }
+                    usleep(4000)
+                }
+                enc.flush()
+            }
+            lock.lock(); let hevcFrames = hevc; lock.unlock()
+            let wired = hevcFrames.compactMap { VideoFrame.decode(Wire.pack(.frame, $0.encoded()).subdata(in: 5..<Wire.pack(.frame, $0.encoded()).count)) }
+            check(hevcFrames.count == 20 && wired.count == 20 && wired.first?.isHEVC == true && wired.first?.isKey == true,
+                  "HEVC s průhledností: zakódováno \(hevcFrames.count)/20 snímků")
+            let result = decode(wired, width: w, height: h)
+            check(result.count == 20, "HEVC dekódováno \(result.count)/20 snímků")
+            if let corner = result.corner, let inside = result.inside {
+                check(corner.3 < 40 && inside.3 > 215,
+                      "průhledné rohy okna zůstanou průhledné (alfa v rohu \(corner.3), uvnitř \(inside.3))")
+            } else {
+                check(false, "čtení dekódovaného HEVC obrazu")
+            }
+            let hevcTotal = hevcFrames.dropFirst().reduce(0) { $0 + $1.data.count }
+            print("      průměrná velikost snímku HEVC: \(hevcTotal / max(1, hevcFrames.count - 1) / 1024) kB")
+        } else {
+            print("      HEVC s průhledností tu není k dispozici – použije se H.264")
+        }
+
         // 3. Real TCP loopback through PeerConnection, encrypted
         let linkKey = SymmetricKey(size: .bits256)
         var received: [VideoFrame] = []
@@ -177,6 +210,47 @@ enum SelfTest {
         return ok
     }
 
+    /// Decodes frames (either codec) to BGRA; returns how many decoded and two pixels of the
+    /// last one: in the transparent corner and inside the window.
+    private static func decode(_ frames: [VideoFrame], width: Int, height: Int)
+        -> (count: Int, corner: (UInt8, UInt8, UInt8, UInt8)?, inside: (UInt8, UInt8, UInt8, UInt8)?) {
+        let lock = NSLock()
+        var count = 0
+        var corner: (UInt8, UInt8, UInt8, UInt8)?, inside: (UInt8, UInt8, UInt8, UInt8)?
+        var format: CMVideoFormatDescription?
+        var session: VTDecompressionSession?
+        for f in frames {
+            if let fmt = VideoFormat.from(f) { format = fmt }
+            guard let fmt = format else { continue }
+            if session == nil {
+                let attrs = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA] as CFDictionary
+                VTDecompressionSessionCreate(allocator: kCFAllocatorDefault, formatDescription: fmt,
+                                             decoderSpecification: nil, imageBufferAttributes: attrs,
+                                             outputCallback: nil, decompressionSessionOut: &session)
+            }
+            guard let session, let sb = H264.makeSampleBuffer(f.data, format: fmt) else { continue }
+            VTDecompressionSessionDecodeFrame(session, sampleBuffer: sb, flags: [], infoFlagsOut: nil) { status, _, image, _, _ in
+                guard status == noErr, let image, CVPixelBufferGetWidth(image) == width,
+                      CVPixelBufferGetHeight(image) == height else { return }
+                CVPixelBufferLockBaseAddress(image, .readOnly)
+                defer { CVPixelBufferUnlockBaseAddress(image, .readOnly) }
+                guard let base = CVPixelBufferGetBaseAddress(image) else { return }
+                let row = CVPixelBufferGetBytesPerRow(image)
+                func px(_ x: Int, _ y: Int) -> (UInt8, UInt8, UInt8, UInt8) {
+                    let p = base.advanced(by: y * row + x * 4).assumingMemoryBound(to: UInt8.self)
+                    return (p[2], p[1], p[0], p[3])
+                }
+                lock.lock()
+                count += 1
+                corner = px(10, 10)
+                inside = px(width / 2, height / 2)
+                lock.unlock()
+            }
+        }
+        if let session { VTDecompressionSessionWaitForAsynchronousFrames(session) }
+        return (count, corner, inside)
+    }
+
     /// BGRA test image with moving bars and a fully transparent top-left corner.
     private static func makeTestBuffer(width: Int, height: Int, frame: Int) -> CVPixelBuffer? {
         var pb: CVPixelBuffer?
@@ -244,9 +318,9 @@ final class AutoTest {
             guard let w = self.findTarget() else { return }
             Log.write("AUTOTEST: posílám okno \(w.wid) „\(w.label)“ \(w.bounds)")
             self.coordinator.send(window: w, crossing: 0.4, grab: CGPoint(x: 120, y: 14))
-            self.waitFor({ (self.coordinator.remotes.first?.framesShown ?? 0) >= 1 }, "první snímek") {
+            self.waitFor({ (self.coordinator.receivedWindows.first?.framesShown ?? 0) >= 1 }, "první snímek") {
                 Log.write("AUTOTEST: OK – kopie okna zobrazuje obraz")
-                if let r = self.coordinator.remotes.first {
+                if let r = self.coordinator.receivedWindows.first {
                     Log.write("AUTOTEST: kopie okna je na \(NSStringFromRect(r.window.frame))")
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self.interact() }
@@ -255,15 +329,16 @@ final class AutoTest {
     }
 
     private func interact() {
-        guard let r = coordinator.remotes.first else { finish("CHYBA – kopie okna zmizela"); return }
+        guard let r = coordinator.receivedWindows.first else { finish("CHYBA – kopie okna zmizela"); return }
         let send: (InputEvent) -> Void = { r.videoView.onInput?($0) }
         var t: TimeInterval = 0
         func later(_ dt: TimeInterval, _ block: @escaping () -> Void) {
             t += dt
             DispatchQueue.main.asyncAfter(deadline: .now() + t, execute: block)
         }
+        Log.write("AUTOTEST: tlačítka okna podle druhého Macu: \(r.videoView.chrome.map { "zavřít \($0.close ?? []), lišta \($0.titleHeight ?? 0)" } ?? "nezjištěno")")
         var down = InputEvent(wid: r.wid, kind: .mouseDown)
-        down.x = 0.5; down.y = 0.5; down.clicks = 1
+        down.x = 0.5; down.y = 0.6; down.clicks = 1
         var up = down
         up.kind = .mouseUp
         later(0) { send(down) }
@@ -281,6 +356,27 @@ final class AutoTest {
                 send(s)
             }
         }
+        // Right click: the context menu must show up here as its own little window.
+        var rdown = InputEvent(wid: r.wid, kind: .mouseDown)
+        rdown.x = 0.4; rdown.y = 0.4; rdown.button = 1; rdown.clicks = 1
+        var rup = rdown
+        rup.kind = .mouseUp
+        later(0.4) { send(rdown) }
+        later(0.08) { send(rup) }
+        later(1.0) {
+            let popups = self.coordinator.remotes.filter { $0.isPopup }
+            Log.write(popups.isEmpty ? "AUTOTEST: CHYBA – nabídka po pravém kliknutí se nezobrazila"
+                                     : "AUTOTEST: OK – nabídka se zobrazila (\(popups.count)×, \(popups.first.map { NSStringFromRect($0.window.frame) } ?? ""), snímků \(popups.first?.framesShown ?? 0))")
+            if let p = popups.first { self.screenshot(p.window, name: "autotest-nabidka.png") }
+        }
+        later(0.3) {
+            send(InputEvent(wid: r.wid, kind: .keyDown, keyCode: 0x35)) // Escape closes the menu
+            send(InputEvent(wid: r.wid, kind: .keyUp, keyCode: 0x35))
+        }
+        later(0.8) {
+            let popups = self.coordinator.remotes.filter { $0.isPopup }
+            Log.write(popups.isEmpty ? "AUTOTEST: OK – nabídka po Escape zmizela" : "AUTOTEST: CHYBA – nabídka zůstala otevřená")
+        }
         later(0.3) {
             // File drop onto the copy.
             let file = FileManager.default.temporaryDirectory.appendingPathComponent("mostoken-autotest.txt")
@@ -294,7 +390,8 @@ final class AutoTest {
         }
         later(1.5) {
             Log.write("AUTOTEST: kopie okna má teď \(Int(r.videoView.videoSize.width))×\(Int(r.videoView.videoSize.height)), snímků \(r.framesShown)")
-            if let s = self.coordinator.streamers.values.first {
+            self.screenshot(r.window, name: "autotest-druhy-mac.png")
+            if let s = self.coordinator.sentWindows.first {
                 Log.write("AUTOTEST: původní okno je teď na \(WindowList.bounds(of: s.wid).map { "\($0)" } ?? "?")")
                 let dir = FileReceiver.directoryOverride ?? FileManager.default.temporaryDirectory
                 let url = dir.appendingPathComponent("autotest-snimek.png")
@@ -303,7 +400,7 @@ final class AutoTest {
         }
         later(0.5) { r.returnToOrigin() }
         later(1.0) {
-            let returned = self.coordinator.streamers.isEmpty && self.coordinator.remotes.isEmpty
+            let returned = self.coordinator.sentWindows.isEmpty && self.coordinator.receivedWindows.isEmpty
             Log.write(returned ? "AUTOTEST: OK – okno vráceno" : "AUTOTEST: CHYBA – okno se nevrátilo")
             if let w = self.findTarget() { Log.write("AUTOTEST: původní okno po vrácení: \(w.bounds)") }
             self.finish("HOTOVO")
@@ -313,6 +410,35 @@ final class AutoTest {
     private func finish(_ result: String) {
         Log.write("AUTOTEST: \(result)")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { NSApp.terminate(nil) }
+    }
+
+    /// Picture of one of our own windows exactly as it appears on screen (with its shadow).
+    private func screenshot(_ window: NSWindow, name: String) {
+        guard #available(macOS 14.0, *) else { return }
+        let wid = CGWindowID(window.windowNumber)
+        let url = (FileReceiver.directoryOverride ?? FileManager.default.temporaryDirectory).appendingPathComponent(name)
+        Task {
+            do {
+                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+                guard let w = content.windows.first(where: { $0.windowID == wid }) else {
+                    Log.write("AUTOTEST: okno pro snímek nenalezeno")
+                    return
+                }
+                let filter = SCContentFilter(desktopIndependentWindow: w)
+                let config = SCStreamConfiguration()
+                config.width = Int(w.frame.width * 2)
+                config.height = Int(w.frame.height * 2)
+                config.showsCursor = false
+                let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+                if let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) {
+                    CGImageDestinationAddImage(dest, image, nil)
+                    CGImageDestinationFinalize(dest)
+                }
+                Log.write("AUTOTEST: snímek \(name) uložen")
+            } catch {
+                Log.write("AUTOTEST: snímek \(name) nejde pořídit: \(error.localizedDescription)")
+            }
+        }
     }
 }
 

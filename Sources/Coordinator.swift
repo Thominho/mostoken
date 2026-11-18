@@ -59,11 +59,13 @@ final class Coordinator {
 
         let s = WindowStreamer(info: w, peer: peer)
         s.onEnded = { [weak self] s in self?.stopStreaming(s.wid, notifyPeer: true) }
+        s.onPopups = { [weak self] parent, popups in self?.syncPopups(of: parent, popups) }
         streamers[w.wid] = s
         let open = WindowOpen(wid: w.wid, title: w.title, app: w.app,
                               width: Double(w.bounds.width), height: Double(w.bounds.height),
                               crossing: crossing,
-                              grabX: grab.map { Double($0.x) }, grabY: grab.map { Double($0.y) })
+                              grabX: grab.map { Double($0.x) }, grabY: grab.map { Double($0.y) },
+                              chrome: AX.chrome(pid: w.pid, wid: w.wid))
         peer.send(Wire.json(.windowOpen, open))
         Log.write("Posílám okno \(w.wid) „\(w.label)“ na \(peer.peerName)")
         if grab == nil { HUD.show("„\(w.app)“ → \(peer.peerName)") }
@@ -86,8 +88,36 @@ final class Coordinator {
 
     func stopStreaming(_ wid: CGWindowID, notifyPeer: Bool, returnCrossing: Double? = nil, grab: CGPoint? = nil) {
         guard let s = streamers.removeValue(forKey: wid) else { return }
+        for popup in streamers.values where popup.parentWid == wid { stopStreaming(popup.wid, notifyPeer: notifyPeer) }
         s.stop(returnCrossing: returnCrossing, grab: grab)
         if notifyPeer { s.peer?.send(Wire.json(.windowClose, WindowRef(wid: wid))) }
+    }
+
+    /// Menus and pop-ups of a sent window are mirrored as their own small windows.
+    private func syncPopups(of parent: WindowStreamer, _ popups: [WindowInfo]) {
+        let current = Set(popups.map(\.wid))
+        for s in streamers.values where s.parentWid == parent.wid && !current.contains(s.wid) {
+            stopStreaming(s.wid, notifyPeer: true)
+        }
+        guard let peer = parent.peer, peer.capabilities.contains(Capability.popups) else { return }
+        for p in popups where streamers[p.wid] == nil {
+            let s = WindowStreamer(info: p, peer: peer, parent: parent.wid)
+            s.onEnded = { [weak self] s in self?.stopStreaming(s.wid, notifyPeer: true) }
+            streamers[p.wid] = s
+            var open = WindowOpen(wid: p.wid, title: p.title, app: p.app,
+                                  width: Double(p.bounds.width), height: Double(p.bounds.height), parent: parent.wid)
+            if let click = parent.injector.lastClick {
+                open.offsetX = Double(p.bounds.minX - click.x)
+                open.offsetY = Double(p.bounds.minY - click.y)
+            }
+            peer.send(Wire.json(.windowOpen, open))
+            Task { @MainActor in
+                do { try await s.start() } catch {
+                    Log.write("Nabídku nejde zachytit: \(error.localizedDescription)")
+                    self.stopStreaming(p.wid, notifyPeer: true)
+                }
+            }
+        }
     }
 
     /// ⌃⌥⌘ + arrow: send the active window over, or give it back if it came from the other Mac.
@@ -105,12 +135,17 @@ final class Coordinator {
     }
 
     func returnAll() {
-        for wid in Array(streamers.keys) { stopStreaming(wid, notifyPeer: true) }
-        for r in remotes { r.returnToOrigin() }
+        for (wid, s) in streamers where !s.isPopup { stopStreaming(wid, notifyPeer: true) }
+        for r in remotes where !r.isPopup { r.returnToOrigin() }
     }
 
+    /// Windows sent to the other Mac (not counting their menus).
+    var sentWindows: [WindowStreamer] { streamers.values.filter { !$0.isPopup } }
+    /// Windows shown here from the other Mac (not counting their menus).
+    var receivedWindows: [RemoteWindowController] { remotes.filter { !$0.isPopup } }
+
     func remote(for window: NSWindow) -> RemoteWindowController? {
-        remotes.first { $0.window === window }
+        remotes.first { $0.window === window && !$0.isPopup }
     }
 
     private func remote(_ c: PeerConnection, _ wid: UInt32) -> RemoteWindowController? {
@@ -159,14 +194,31 @@ final class Coordinator {
         case .fileEnd:
             guard let e = Wire.parse(FileEnd.self, data) else { return }
             files.end(e)
+        case .viewInfo:
+            guard let v = Wire.parse(ViewInfo.self, data), streamers[v.wid]?.peer === c else { return }
+            streamers[v.wid]?.setReceiverScale(CGFloat(v.scale))
+        case .visibility:
+            guard let v = Wire.parse(Visibility.self, data), let s = streamers[v.wid], s.peer === c else { return }
+            s.setVisible(v.visible)
+            for popup in streamers.values where popup.parentWid == v.wid { popup.setVisible(v.visible) }
+        case .focus:
+            guard let r = Wire.parse(WindowRef.self, data), let s = streamers[r.wid], s.peer === c else { return }
+            s.injector.prepareFocus()
         case .hello, .auth, .pairAccept:
             break
         }
     }
 
     private func openRemote(_ o: WindowOpen, from c: PeerConnection) {
-        let r = RemoteWindowController(open: o, peer: c)
-        r.onClosed = { [weak self] r in self?.remotes.removeAll { $0 === r } }
+        let parent = o.parent.flatMap { remote(c, $0) }
+        if o.parent != nil && parent == nil { return }
+        let r = RemoteWindowController(open: o, peer: c, anchor: parent?.videoView.lastClickScreen)
+        r.onClosed = { [weak self] r in
+            guard let self else { return }
+            self.remotes.removeAll { $0 === r }
+            // A window's menus go with it.
+            for popup in self.remotes where popup.parentWid == r.wid && popup.peer === r.peer { popup.closeFromRemote() }
+        }
         r.videoView.onFilesDropped = { [weak r] urls in
             guard let r, let peer = r.peer else { return }
             HUD.show(urls.count == 1 ? "Posílám soubor…" : "Posílám \(urls.count) soubory…")
@@ -177,7 +229,7 @@ final class Coordinator {
         }
         remotes.append(r)
         r.show()
-        Log.write("Přijato okno \(o.wid) „\(o.app)“ od \(c.peerName)")
+        Log.write("Přijato \(o.parent == nil ? "okno" : "nabídka") \(o.wid) „\(o.app)“ od \(c.peerName)")
     }
 
     /// A file dropped onto our window on the other Mac: open it in that window's app.

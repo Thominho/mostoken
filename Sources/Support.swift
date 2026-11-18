@@ -82,15 +82,11 @@ enum Settings {
         get { d.object(forKey: "parkOriginal") as? Bool ?? true }
         set { d.set(newValue, forKey: "parkOriginal") }
     }
-    /// "cursor" (default): clicks go to the window's real on-screen position.
-    /// "background": experimental, posts clicks to the app without moving the window.
+    /// "background" (default): clicks go straight to the app, nothing on this Mac moves.
+    /// "cursor": real clicks at the window's on-screen position (fallback for odd apps).
     static var mouseMode: String {
-        get { d.string(forKey: "mouseMode") ?? "cursor" }
-        set { d.set(newValue, forKey: "mouseMode") }
-    }
-    /// Event fields that carry the target window number in background mode.
-    static var backgroundFields: [Int] {
-        (d.array(forKey: "backgroundFields") as? [Int]) ?? [91, 92]
+        get { d.string(forKey: "mouseMode2") ?? "background" }
+        set { d.set(newValue, forKey: "mouseMode2") }
     }
     static var autoUpdate: Bool {
         get { d.object(forKey: "autoUpdate") as? Bool ?? true }

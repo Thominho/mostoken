@@ -18,6 +18,16 @@ enum MsgType: UInt8 {
     case fileEnd = 13
     case auth = 14
     case pairAccept = 15
+    case viewInfo = 16
+    case focus = 17
+    case visibility = 18
+}
+
+/// What this build understands; sent in Hello so both Macs only use features both support.
+enum Capability {
+    static let hevcAlpha = "hevc-alpha"
+    static let popups = "popups"
+    static let all: [String] = VideoEncoder.hevcAlphaSupported ? [popups, hevcAlpha] : [popups]
 }
 
 /// First message on every connection (plaintext). `nonce` and `pairKey` feed the key agreement.
@@ -27,6 +37,27 @@ struct Hello: Codable {
     var version: Int
     var nonce: Data?
     var pairKey: Data?
+    var capabilities: [String]?
+}
+
+/// Where the window's own title bar buttons are (points from the window's top-left, [x, y, w, h]).
+struct Chrome: Codable {
+    var close: [Double]?
+    var minimize: [Double]?
+    var zoom: [Double]?
+    var titleHeight: Double?
+}
+
+/// Receiver → sender: the backing scale of the screen the window is shown on.
+struct ViewInfo: Codable {
+    var wid: UInt32
+    var scale: Double
+}
+
+/// Receiver → sender: whether the window can be seen at all (not minimized / covered).
+struct Visibility: Codable {
+    var wid: UInt32
+    var visible: Bool
 }
 
 /// Second message (plaintext): whether this Mac already has a pairing key for the other one.
@@ -46,6 +77,12 @@ struct WindowOpen: Codable {
     var crossing: Double?
     var grabX: Double?
     var grabY: Double?
+    /// Set for menus and other pop-up windows: the window they belong to, and their position
+    /// relative to the last click in that window.
+    var parent: UInt32?
+    var offsetX: Double?
+    var offsetY: Double?
+    var chrome: Chrome?
 }
 
 /// The receiving Mac gives the window back, optionally at a given edge position.
@@ -77,6 +114,7 @@ struct Geometry: Codable {
     var wid: UInt32
     var width: Double
     var height: Double
+    var chrome: Chrome?
 }
 
 struct WindowRef: Codable {
@@ -160,17 +198,20 @@ struct ByteReader {
 
 /// One compressed H.264 frame (AVCC, 4-byte NAL length prefixes).
 /// Keyframes carry the SPS/PPS parameter sets so the receiver can (re)build its decoder.
+/// H.264: keyframes carry SPS/PPS in `parameterSets`.
+/// HEVC with alpha (`isHEVC`): keyframes carry one serialized format description instead.
 struct VideoFrame {
     var wid: UInt32
     var isKey: Bool
     var parameterSets: [Data]
     var data: Data
+    var isHEVC = false
 
     func encoded() -> Data {
         var w = ByteWriter()
         w.data.reserveCapacity(data.count + 64)
         w.u32(wid)
-        w.u8(isKey ? 1 : 0)
+        w.u8((isKey ? 1 : 0) | (isHEVC ? 2 : 0))
         w.u8(UInt8(min(parameterSets.count, 255)))
         for p in parameterSets.prefix(255) {
             w.u16(UInt16(min(p.count, 65535)))
@@ -188,7 +229,7 @@ struct VideoFrame {
             guard let l = r.u16(), let p = r.bytes(Int(l)) else { return nil }
             sets.append(p)
         }
-        return VideoFrame(wid: wid, isKey: flags & 1 != 0, parameterSets: sets, data: r.rest())
+        return VideoFrame(wid: wid, isKey: flags & 1 != 0, parameterSets: sets, data: r.rest(), isHEVC: flags & 2 != 0)
     }
 }
 

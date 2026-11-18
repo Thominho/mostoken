@@ -7,7 +7,7 @@ final class SettingsModel: ObservableObject {
     }
     @Published var edgeDrag: Bool { didSet { Settings.edgeDrag = edgeDrag } }
     @Published var park: Bool { didSet { Settings.parkOriginal = park } }
-    @Published var backgroundMouse: Bool { didSet { Settings.mouseMode = backgroundMouse ? "background" : "cursor" } }
+    @Published var cursorMouse: Bool { didSet { Settings.mouseMode = cursorMouse ? "cursor" : "background" } }
     @Published var autoUpdate: Bool { didSet { Settings.autoUpdate = autoUpdate } }
     @Published var launchAtLogin: Bool {
         didSet { if launchAtLogin != oldValue && !applying { LoginItem.set(launchAtLogin) } }
@@ -29,7 +29,7 @@ final class SettingsModel: ObservableObject {
         side = Settings.peerSide
         edgeDrag = Settings.edgeDrag
         park = Settings.parkOriginal
-        backgroundMouse = Settings.mouseMode == "background"
+        cursorMouse = Settings.mouseMode == "cursor"
         autoUpdate = Settings.autoUpdate
         launchAtLogin = LoginItem.isEnabled
     }
@@ -143,7 +143,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Toggle("Posílat okna přetažením k okraji obrazovky", isOn: $model.edgeDrag)
                     Toggle("Odsunout původní okno stranou, dokud je na druhém Macu", isOn: $model.park)
-                    Toggle("Klikat na pozadí, bez vracení okna na obrazovku (pokusné)", isOn: $model.backgroundMouse)
+                    Toggle("Klikat přes kurzor (jen když některá aplikace na kliknutí nereaguje)", isOn: $model.cursorMouse)
                     Text("⌃⌥⌘ + šipka pošle aktivní okno na druhý Mac nebo ho vrátí zpět.")
                         .font(.caption)
                         .foregroundColor(.secondary)

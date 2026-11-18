@@ -137,17 +137,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         windowsItem.submenu = sub
         menu.addItem(windowsItem)
 
-        if !coordinator.streamers.isEmpty || !coordinator.remotes.isEmpty {
+        if !coordinator.sentWindows.isEmpty || !coordinator.receivedWindows.isEmpty {
             menu.addItem(.separator())
-            if !coordinator.streamers.isEmpty { menu.addItem(disabled("Na druhém Macu:")) }
-            for s in coordinator.streamers.values {
+            if !coordinator.sentWindows.isEmpty { menu.addItem(disabled("Na druhém Macu:")) }
+            for s in coordinator.sentWindows {
                 let it = item("Vrátit „\(truncate(s.info.label, 50))“", #selector(returnStreamed(_:)))
                 it.tag = Int(s.wid)
                 it.indentationLevel = 1
                 menu.addItem(it)
             }
-            if !coordinator.remotes.isEmpty { menu.addItem(disabled("Z druhého Macu:")) }
-            for (i, r) in coordinator.remotes.enumerated() {
+            if !coordinator.receivedWindows.isEmpty { menu.addItem(disabled("Z druhého Macu:")) }
+            for (i, r) in coordinator.receivedWindows.enumerated() {
                 let it = item("Vrátit „\(truncate(r.title, 50))“", #selector(returnRemote(_:)))
                 it.tag = i
                 it.indentationLevel = 1
@@ -199,8 +199,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func returnRemote(_ sender: NSMenuItem) {
-        guard coordinator.remotes.indices.contains(sender.tag) else { return }
-        coordinator.remotes[sender.tag].returnToOrigin()
+        let received = coordinator.receivedWindows
+        guard received.indices.contains(sender.tag) else { return }
+        received[sender.tag].returnToOrigin()
     }
 
     @objc private func returnAll() { coordinator.returnAll() }

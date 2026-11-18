@@ -42,6 +42,7 @@ final class PeerConnection {
     private var txCipher: MessageCipher?
     private var _peerID: String?
     private var _peerName = "druhý Mac"
+    private var _capabilities: Set<String> = []
 
     // Confined to `queue`.
     private var stage = Stage.handshake
@@ -65,6 +66,12 @@ final class PeerConnection {
     var peerID: String? {
         lock.lock(); defer { lock.unlock() }
         return _peerID
+    }
+
+    /// Features the other Mac's build supports (empty for 1.0.x).
+    var capabilities: Set<String> {
+        lock.lock(); defer { lock.unlock() }
+        return _capabilities
     }
 
     var peerName: String {
@@ -97,9 +104,10 @@ final class PeerConnection {
                 if self.raw {
                     DispatchQueue.main.async { self.onReady?(self) }
                 } else {
-                    self.send(Wire.json(.hello, Hello(id: self.myID, name: self.myName, version: 1,
+                    self.send(Wire.json(.hello, Hello(id: self.myID, name: self.myName, version: 2,
                                                       nonce: self.myNonce,
-                                                      pairKey: self.ephemeral.publicKey.rawRepresentation)))
+                                                      pairKey: self.ephemeral.publicKey.rawRepresentation,
+                                                      capabilities: Capability.all)))
                 }
                 self.readHeader()
             case .failed(let error):
@@ -122,14 +130,14 @@ final class PeerConnection {
     }
 
     /// Takes a packed message (`Wire.pack`), encrypts it once the connection is secure.
-    func send(_ packed: Data) {
+    func send(_ packed: Data, completion: (() -> Void)? = nil) {
         lock.lock()
         defer { lock.unlock() }
-        guard !closed, packed.count >= 5 else { return }
+        guard !closed, packed.count >= 5 else { completion?(); return }
         var out = packed
         if let tx = txCipher {
             let plain = packed.subdata(in: (packed.startIndex + 4)..<packed.endIndex)
-            guard let sealed = try? tx.seal(plain) else { return }
+            guard let sealed = try? tx.seal(plain) else { completion?(); return }
             var w = ByteWriter()
             w.data.reserveCapacity(sealed.count + 4)
             w.u32(UInt32(sealed.count))
@@ -142,6 +150,7 @@ final class PeerConnection {
         nw.send(content: out, completion: .contentProcessed { [weak self] error in
             guard let self else { return }
             self.lock.lock(); self.pending -= n; self.lock.unlock()
+            completion?()
             if let error {
                 Log.write("Chyba při odesílání: \(error)")
                 self.cancel()
@@ -232,6 +241,7 @@ final class PeerConnection {
             lock.lock()
             _peerID = hello.id
             _peerName = hello.name
+            _capabilities = Set(hello.capabilities ?? [])
             lock.unlock()
             peerNonce = hello.nonce ?? Data()
             peerPublic = hello.pairKey ?? Data()
