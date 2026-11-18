@@ -82,9 +82,15 @@ enum Settings {
         get { d.object(forKey: "parkOriginal") as? Bool ?? true }
         set { d.set(newValue, forKey: "parkOriginal") }
     }
-    static var injectViaCursor: Bool {
-        get { d.bool(forKey: "injectViaCursor") }
-        set { d.set(newValue, forKey: "injectViaCursor") }
+    /// "cursor" (default): clicks go to the window's real on-screen position.
+    /// "background": experimental, posts clicks to the app without moving the window.
+    static var mouseMode: String {
+        get { d.string(forKey: "mouseMode") ?? "cursor" }
+        set { d.set(newValue, forKey: "mouseMode") }
+    }
+    /// Event fields that carry the target window number in background mode.
+    static var backgroundFields: [Int] {
+        (d.array(forKey: "backgroundFields") as? [Int]) ?? [91, 92]
     }
     static var autoUpdate: Bool {
         get { d.object(forKey: "autoUpdate") as? Bool ?? true }

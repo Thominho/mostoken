@@ -31,6 +31,9 @@ final class WindowStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
     private var restoreOrigin: CGPoint?
     private var stopped = false
     private var lastStats = Date()
+    private var shownForInput = false
+    private var reparkTimer: Timer?
+    private var lastPointerInput = Date()
 
     init(info: WindowInfo, peer: PeerConnection) {
         self.info = info
@@ -39,6 +42,26 @@ final class WindowStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
         self.injector = InputInjector(pid: info.pid, wid: info.wid)
         self.flattener = Flattener(background: WindowStreamer.windowBackground())
         super.init()
+        injector.showWindow = { [weak self] in self?.showForInput() }
+    }
+
+    /// A click is coming from the other Mac: put a parked window back on screen so the click can
+    /// land on it, and park it again after a few seconds without clicks.
+    private func showForInput() {
+        lastPointerInput = Date()
+        if let origin = restoreOrigin, !shownForInput, let ax = AX.window(pid: info.pid, wid: wid) {
+            AX.setPosition(ax, origin)
+            shownForInput = true
+        }
+        guard shownForInput, reparkTimer == nil else { return }
+        reparkTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            guard !self.injector.buttonDown, Date().timeIntervalSince(self.lastPointerInput) > 4 else { return }
+            timer.invalidate()
+            self.reparkTimer = nil
+            self.shownForInput = false
+            if !self.stopped { self.park() }
+        }
     }
 
     private static func windowBackground() -> CIColor {
@@ -211,6 +234,7 @@ final class WindowStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
         stopped = true
         pollTimer?.invalidate(); pollTimer = nil
         parkTimer?.invalidate(); parkTimer = nil
+        reparkTimer?.invalidate(); reparkTimer = nil
         stream?.stopCapture(completionHandler: nil)
         stream = nil
         if let crossing = returnCrossing, let ax = AX.window(pid: info.pid, wid: wid), let sz = AX.size(ax) {
@@ -268,7 +292,7 @@ final class WindowStreamer: NSObject, SCStreamOutput, SCStreamDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 guard !self.stopped, let ax = AX.window(pid: self.info.pid, wid: self.wid) else { return }
                 AX.setSize(ax, original.size)
-                if Settings.parkOriginal && !Settings.injectViaCursor {
+                if Settings.parkOriginal {
                     self.restoreOrigin = original.origin
                     self.park()
                 } else {

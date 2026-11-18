@@ -47,6 +47,22 @@ enum WindowList {
     static func at(_ point: CGPoint) -> WindowInfo? {
         onScreen().first { $0.bounds.contains(point) }
     }
+
+    /// Topmost normal window of any app (including MostOken itself) at a point.
+    static func topmostWindow(at point: CGPoint) -> CGWindowID? {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+                as? [[String: Any]] else { return nil }
+        for d in list {
+            guard let layer = d[kCGWindowLayer as String] as? Int, layer == 0,
+                  let wid = d[kCGWindowNumber as String] as? CGWindowID,
+                  let boundsDict = d[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
+                  bounds.contains(point) else { continue }
+            if let alpha = d[kCGWindowAlpha as String] as? Double, alpha <= 0.01 { continue }
+            return wid
+        }
+        return nil
+    }
 }
 
 enum ScreenGeometry {

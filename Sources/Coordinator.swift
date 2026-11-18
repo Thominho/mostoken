@@ -73,7 +73,7 @@ final class Coordinator {
                 try await s.start()
                 if let origin = dragOrigin {
                     s.park(afterDragFrom: origin)
-                } else if Settings.parkOriginal && !Settings.injectViaCursor {
+                } else if Settings.parkOriginal {
                     s.park()
                 }
             } catch {

@@ -61,7 +61,11 @@ aplikace. Původní okno se mezitím odsune skoro celé za okraj obrazovky.
 - Obraz je komprimovaný, takže drobné písmo může být při rychlých změnách chvilku méně ostré.
 - Z přesunutého okna zatím nejde přetáhnout soubor ven, funguje jen směr do okna.
 - Na obou Macích by mělo být stejné rozložení klávesnice.
-- Pokud některá aplikace na kliknutí nereaguje, zapni v Nastavení volbu „Klikat přes kurzor“.
+- Když klikneš do okna z druhého Macu, původní okno se na původním Macu na chvilku vrátí na obrazovku,
+  aby kliknutí dopadlo na správné místo. Po pár vteřinách bez klikání se zase odsune.
+- Pokud se Macy ovládají jednou myší přes Univerzální ovládání, je to zatím vyzkoušené jen na jednom Macu.
+  Kdyby kliknutí do okna z druhého Macu zlobilo, dej vědět (nebo zkus v Nastavení pokusnou volbu
+  „Klikat na pozadí“).
 
 ## Vývoj
 
